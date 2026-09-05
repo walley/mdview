@@ -1,4 +1,4 @@
-use crate::render::{Color, Line, Style, Styled};
+use crate::render::{char_display_w, display_width, Color, Line, Style, Styled};
 use pulldown_cmark::{Alignment, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 fn heading_style(level: HeadingLevel) -> Style {
@@ -53,7 +53,6 @@ fn plain() -> Style {
 #[derive(Debug)]
 pub struct Document {
     pub lines: Vec<Line>,
-    pub width: usize,
 }
 
 /// Accumulates inline (paragraph/heading/list-item) content before wrapping.
@@ -77,14 +76,6 @@ impl Block {
     }
 }
 
-fn char_w(c: char) -> usize {
-    crate::render::char_display_w(c)
-}
-
-fn display_w(s: &str) -> usize {
-    s.chars().map(char_w).sum()
-}
-
 /// Wrap styled runs into lines of at most `width`, breaking on whitespace.
 /// Words wider than `width` are split.
 fn wrap_runs(runs: &[Styled], width: usize) -> Vec<Line> {
@@ -96,7 +87,7 @@ fn wrap_runs(runs: &[Styled], width: usize) -> Vec<Line> {
 
     for run in runs {
         for ch in run.text.chars() {
-            let cw = char_w(ch);
+            let cw = char_display_w(ch);
             if ch == ' ' || ch == '\t' {
                 space.push(Styled::new(&ch.to_string(), run.style));
                 space_w += cw;
@@ -110,18 +101,16 @@ fn wrap_runs(runs: &[Styled], width: usize) -> Vec<Line> {
                 space.clear();
                 space_w = 0;
             }
-            if cur_w + cw > width {
-                if !cur.is_empty() {
-                    lines.push(Line {
-                        runs: std::mem::take(&mut cur),
-                    });
-                    cur_w = 0;
-                }
+            if cur_w + cw > width && !cur.is_empty() {
+                lines.push(Line {
+                    runs: std::mem::take(&mut cur),
+                });
+                cur_w = 0;
             }
             for s in space.drain(..) {
                 cur.push(s);
             }
-            cur_w = cur_w + space_w;
+            cur_w += space_w;
             space_w = 0;
             cur.push(Styled::new(&ch.to_string(), run.style));
             cur_w += cw;
@@ -168,7 +157,6 @@ pub fn render_markdown(source: &str, width: usize) -> Document {
 
     // table state
     let mut in_table = false;
-    let mut in_head = false;
     let mut table_aligns: Vec<Alignment> = Vec::new();
     let mut table_rows: Vec<Vec<Vec<Styled>>> = Vec::new();
     let mut table_cur_row: Vec<Vec<Styled>> = Vec::new();
@@ -184,7 +172,7 @@ pub fn render_markdown(source: &str, width: usize) -> Document {
         if runs.is_empty() {
             return;
         }
-        let wrap_w = width.saturating_sub(indent + marker.as_ref().map_or(0, |m| display_w(m)));
+        let wrap_w = width.saturating_sub(indent + marker.as_ref().map_or(0, |m| display_width(m)));
         let lines = wrap_runs(&runs, wrap_w);
         let mut first = true;
         for mut ln in lines {
@@ -240,13 +228,10 @@ pub fn render_markdown(source: &str, width: usize) -> Document {
                 Tag::Table(aligns) => {
                     flush_inline(&mut out, &mut block, width, &mut block_marker, block_indent);
                     in_table = true;
-                    in_head = false;
                     table_aligns = aligns;
                     table_rows.clear();
                 }
-                Tag::TableHead => {
-                    in_head = true;
-                }
+                Tag::TableHead => {}
                 Tag::TableRow => {
                     table_cur_row.clear();
                 }
@@ -281,6 +266,7 @@ pub fn render_markdown(source: &str, width: usize) -> Document {
                     flush_inline(&mut out, &mut block, width, &mut block_marker, block_indent);
                     list_kind.pop();
                     list_counter.pop();
+                    block_indent = list_kind.len().saturating_mul(2);
                     out.push(Line { runs: vec![] });
                 }
                 TagEnd::Item => {
@@ -300,7 +286,6 @@ pub fn render_markdown(source: &str, width: usize) -> Document {
                     if !table_cur_row.is_empty() {
                         table_rows.push(std::mem::take(&mut table_cur_row));
                     }
-                    in_head = false;
                 }
                 TagEnd::TableRow => {
                     if !table_cur_row.is_empty() {
@@ -396,7 +381,7 @@ pub fn render_markdown(source: &str, width: usize) -> Document {
 
     flush_inline(&mut out, &mut block, width, &mut block_marker, block_indent);
 
-    Document { lines: out, width }
+    Document { lines: out }
 }
 
 fn prune_table_rows(rows: &mut Vec<Vec<Vec<Styled>>>) {
@@ -481,15 +466,20 @@ fn render_table(rows: &[Vec<Vec<Styled>>], aligns: &[Alignment], width: usize, o
     let mut col_w = vec![0usize; ncols];
     for row in rows {
         for (ci, cell) in row.iter().enumerate() {
-            let w: usize = cell.iter().map(|r| display_w(&r.text)).sum();
+            let w: usize = cell.iter().map(|r| display_width(&r.text)).sum();
             if w > col_w[ci] {
                 col_w[ci] = w;
             }
         }
     }
 
-    // Table visual width = sum(col_w) + 2*ncols - 1 (border chars).
-    let border_w = 2usize.saturating_mul(ncols).saturating_sub(1);
+    // Each cell gets one space of padding left and right.
+    for w in col_w.iter_mut() {
+        *w += 2;
+    }
+
+    // Table visual width = sum(col_w) + ncols + 1 (vertical separators).
+    let border_w = ncols + 1;
     let avail = width.saturating_sub(border_w);
     let total: usize = col_w.iter().sum();
     if total > avail {
@@ -509,7 +499,10 @@ fn render_table(rows: &[Vec<Vec<Styled>>], aligns: &[Alignment], width: usize, o
         ..plain()
     };
 
-    let (top, mid, bottom) = table_borders(&col_w);
+    let top = table_border('┌', '┬', '┐', '─', &col_w);
+    let header_div = table_border('╞', '╪', '╡', '═', &col_w);
+    let row_div = table_border('├', '┼', '┤', '─', &col_w);
+    let bottom = table_border('└', '┴', '┘', '─', &col_w);
 
     out.push(Line {
         runs: vec![Styled::new(&top, sepc)],
@@ -518,10 +511,11 @@ fn render_table(rows: &[Vec<Vec<Styled>>], aligns: &[Alignment], width: usize, o
     for (ri, row) in rows.iter().enumerate() {
         let is_header = ri == 0;
         let mut lruns: Vec<Styled> = Vec::new();
-        for ci in 0..ncols {
-            let cw = col_w[ci];
+        lruns.push(Styled::new("│", sepc));
+        for (ci, &cw) in col_w.iter().enumerate() {
+            let inner = cw.saturating_sub(2).max(1);
             let cell = row.get(ci).cloned().unwrap_or_default();
-            let mut packed = pack_cell(&cell, cw);
+            let mut packed = pack_cell(&cell, inner);
             if is_header {
                 for r in packed.iter_mut() {
                     r.style.bold = true;
@@ -530,25 +524,29 @@ fn render_table(rows: &[Vec<Vec<Styled>>], aligns: &[Alignment], width: usize, o
                     }
                 }
             }
-            let content_w: usize = packed.iter().map(|r| display_w(&r.text)).sum();
-            let pad = cw.saturating_sub(content_w);
+            let content_w: usize = packed.iter().map(|r| display_width(&r.text)).sum();
+            let pad = inner.saturating_sub(content_w);
             let align = aligns.get(ci).copied().unwrap_or(Alignment::None);
             let (pl, pr) = match align {
                 Alignment::Right => (pad, 0),
                 Alignment::Center => (pad / 2, pad - pad / 2),
                 _ => (0, pad),
             };
+            lruns.push(Styled::new(" ", plain()));
             lruns.push(Styled::new(&" ".repeat(pl), plain()));
             lruns.extend(packed);
             lruns.push(Styled::new(&" ".repeat(pr), plain()));
-            if ci < ncols - 1 {
-                lruns.push(Styled::new("│", sepc));
-            }
+            lruns.push(Styled::new(" ", plain()));
+            lruns.push(Styled::new("│", sepc));
         }
         out.push(Line { runs: lruns });
         if is_header {
             out.push(Line {
-                runs: vec![Styled::new(&mid, sepc)],
+                runs: vec![Styled::new(&header_div, sepc)],
+            });
+        } else if ri < rows.len() - 1 {
+            out.push(Line {
+                runs: vec![Styled::new(&row_div, sepc)],
             });
         }
     }
@@ -563,7 +561,7 @@ fn pack_cell(cell: &[Styled], cw: usize) -> Vec<Styled> {
     let mut w = 0usize;
     'outer: for run in cell {
         for ch in run.text.chars() {
-            let cwch = char_w(ch);
+            let cwch = char_display_w(ch);
             if w + cwch > cw {
                 break 'outer;
             }
@@ -581,24 +579,17 @@ fn pack_cell(cell: &[Styled], cw: usize) -> Vec<Styled> {
     out
 }
 
-fn table_borders(col_w: &[usize]) -> (String, String, String) {
-    let mut top = String::from("┌");
-    let mut mid = String::from("├");
-    let mut bottom = String::from("└");
+fn table_border(left: char, junction: char, right: char, fill: char, col_w: &[usize]) -> String {
+    let mut s = String::new();
+    s.push(left);
     for (i, w) in col_w.iter().enumerate() {
-        top.push_str(&"─".repeat(*w));
-        mid.push_str(&"─".repeat(*w));
-        bottom.push_str(&"─".repeat(*w));
+        s.extend(std::iter::repeat_n(fill, *w));
         if i < col_w.len() - 1 {
-            top.push('┬');
-            mid.push('┼');
-            bottom.push('┴');
+            s.push(junction);
         }
     }
-    top.push('┐');
-    mid.push('┤');
-    bottom.push('┘');
-    (top, mid, bottom)
+    s.push(right);
+    s
 }
 
 /// Reduce column widths until their sum is <= `avail`, shrinking the widest
@@ -606,7 +597,7 @@ fn table_borders(col_w: &[usize]) -> (String, String, String) {
 fn shrink_columns(col_w: &mut [usize], avail: usize) {
     loop {
         let total: usize = col_w.iter().sum();
-        if total <= avail || col_w.iter().all(|&w| w <= 0) {
+        if total <= avail || col_w.iter().all(|&w| w == 0) {
             break;
         }
         if let Some(maxi) = col_w
@@ -636,7 +627,8 @@ mod tests {
         let md = "| A | B |\n|---|---|\n| 1 | 22 |\n| 333 | 4 |\n";
         let doc = render_markdown(md, 60);
         let lines: Vec<String> = doc.lines.iter().map(plain).collect();
-        assert!(lines.iter().any(|l| l == "┌──────┬────┐" || l.starts_with("┌")), "{lines:?}");
+        assert!(lines.iter().any(|l| l.starts_with("┌")), "{lines:?}");
+        assert!(lines.iter().any(|l| l.starts_with("╞")), "{lines:?}");
         assert!(lines.iter().any(|l| l.starts_with("├")), "{lines:?}");
         assert!(lines.iter().any(|l| l.starts_with("└")), "{lines:?}");
         // header text must be present
@@ -644,7 +636,7 @@ mod tests {
         assert!(lines.iter().any(|l| l.contains("333")), "{lines:?}");
         // every output row must fit the terminal width
         for l in &lines {
-            assert!(display_w(l) <= 60, "too wide: {l:?}");
+            assert!(display_width(l) <= 60, "too wide: {l:?}");
         }
     }
 
@@ -654,8 +646,25 @@ mod tests {
         let doc = render_markdown(md, 20);
         for l in &doc.lines {
             let p = plain(l);
-            assert!(display_w(&p) <= 20, "too wide: {p:?}");
+            assert!(display_width(&p) <= 20, "too wide: {p:?}");
         }
+    }
+
+    #[test]
+    fn table_rows_have_vertical_borders() {
+        let md = "| A | B |\n|---|---|\n| 1 | 2 |\n";
+        let doc = render_markdown(md, 60);
+        let lines: Vec<String> = doc.lines.iter().map(plain).collect();
+        let row = lines.iter().find(|l| l.contains("A") && l.contains("B")).unwrap();
+        assert!(row.starts_with("│"), "{row}");
+        assert!(row.ends_with("│"), "{row}");
+        let body = lines.iter().find(|l| l.contains('1') && l.contains('2')).unwrap();
+        assert!(body.starts_with("│ ") && body.ends_with(" │"), "{body}");
+        // double-line header divider
+        assert!(
+            lines.iter().any(|l| l.starts_with('╞') && l.ends_with('╡')),
+            "{lines:?}"
+        );
     }
 
     #[test]
@@ -664,7 +673,7 @@ mod tests {
         let doc = render_markdown(md, 24);
         assert!(doc.lines.len() > 1, "expected wrapping");
         for l in &doc.lines {
-            assert!(display_w(&plain(l)) <= 24, "line too wide");
+            assert!(display_width(&plain(l)) <= 24, "line too wide");
         }
     }
 

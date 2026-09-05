@@ -1,7 +1,10 @@
 /// ANSI color names supported for styling.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[allow(dead_code)]
 pub enum Color {
+    #[default]
+    Reset,
+    Unset,
     Black,
     Red,
     Green,
@@ -19,14 +22,6 @@ pub enum Color {
     BrightBlack,
     BrightWhite,
     Rgb(u8, u8, u8),
-    Reset,
-    Unset,
-}
-
-impl Default for Color {
-    fn default() -> Color {
-        Color::Reset
-    }
 }
 
 impl Color {
