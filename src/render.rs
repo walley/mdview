@@ -87,6 +87,7 @@ pub struct Style {
     pub bold: bool,
     pub italic: bool,
     pub underline: bool,
+    pub strikethrough: bool,
 }
 
 impl Style {
@@ -110,6 +111,13 @@ impl Style {
         }
         if self.underline != prev.underline {
             parts.push(if self.underline { "4".into() } else { "24".into() });
+        }
+        if self.strikethrough != prev.strikethrough {
+            parts.push(if self.strikethrough {
+                "9".into()
+            } else {
+                "29".into()
+            });
         }
         if parts.is_empty() {
             String::new()

@@ -12,6 +12,7 @@ fn heading_style(level: HeadingLevel) -> Style {
         bold: level <= HeadingLevel::H3,
         italic: false,
         underline: level <= HeadingLevel::H2,
+        strikethrough: false,
     }
 }
 
@@ -22,6 +23,7 @@ fn code_style() -> Style {
         bold: false,
         italic: false,
         underline: false,
+        strikethrough: false,
     }
 }
 
@@ -32,6 +34,7 @@ fn inline_code_style() -> Style {
         bold: false,
         italic: false,
         underline: false,
+        strikethrough: false,
     }
 }
 
@@ -42,6 +45,7 @@ fn link_style() -> Style {
         bold: false,
         italic: false,
         underline: true,
+        strikethrough: false,
     }
 }
 
@@ -401,6 +405,7 @@ fn st_bold() -> Style {
         bold: true,
         italic: false,
         underline: false,
+        strikethrough: false,
     }
 }
 
@@ -411,11 +416,19 @@ fn st_italic() -> Style {
         bold: false,
         italic: true,
         underline: false,
+        strikethrough: false,
     }
 }
 
 fn st_strike() -> Style {
-    Style::default()
+    Style {
+        fg: Color::Unset,
+        bg: Color::Reset,
+        bold: false,
+        italic: false,
+        underline: false,
+        strikethrough: true,
+    }
 }
 
 fn st_image() -> Style {
@@ -425,6 +438,7 @@ fn st_image() -> Style {
         bold: false,
         italic: true,
         underline: true,
+        strikethrough: false,
     }
 }
 
@@ -435,6 +449,7 @@ fn st_html() -> Style {
         bold: false,
         italic: false,
         underline: false,
+        strikethrough: false,
     }
 }
 
@@ -448,6 +463,7 @@ fn current_inline(para_styles: &[Style], head_style: Option<Style>) -> Style {
         s.bold |= st.bold;
         s.italic |= st.italic;
         s.underline |= st.underline;
+        s.strikethrough |= st.strikethrough;
     }
     s
 }
@@ -492,6 +508,7 @@ fn render_table(rows: &[Vec<Vec<Styled>>], aligns: &[Alignment], width: usize, o
         bold: true,
         italic: false,
         underline: false,
+        strikethrough: false,
     };
     let sepc = Style {
         fg: Color::BrightBlack,
